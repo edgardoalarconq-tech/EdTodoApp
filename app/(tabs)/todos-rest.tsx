@@ -1,12 +1,4 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import {
-  onValue,
-  push,
-  ref,
-  remove,
-  set,
-  update,
-} from 'firebase/database';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -15,6 +7,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
@@ -23,22 +16,48 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Colors } from '@/constants/theme';
-import { getRealtimeDb, isFirebaseConfigured } from '@/lib/firebase';
-import type { TodoItem, TodoRaw } from '@/lib/todos-model';
-import { parseTodosSnapshot } from '@/lib/todos-model';
+import {
+  restCreateTodo,
+  restDeleteTodo,
+  restFetchTodos,
+  restUpdateTodoCompleted,
+} from '@/lib/firebase-rtdb-rest';
+import { isFirebaseConfigured } from '@/lib/firebase';
+import type { TodoItem } from '@/lib/todos-model';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
-const TODOS_PATH = 'todos';
-
-export default function TodosScreen() {
+export default function TodosRestScreen() {
   const insets = useSafeAreaInsets();
   const colorScheme = useColorScheme() ?? 'light';
   const theme = Colors[colorScheme];
   const [todos, setTodos] = useState<TodoItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+
+  const loadTodos = useCallback(async (isRefresh = false) => {
+    if (!isFirebaseConfigured) return;
+    try {
+      if (isRefresh) {
+        setRefreshing(true);
+      } else {
+        setLoading(true);
+      }
+      setError(null);
+      const list = await restFetchTodos();
+      setTodos(list);
+      if (__DEV__) {
+        console.log(`[RTDB REST] GET /todos.json → ${list.length} tarea(s)`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Error al cargar');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (!isFirebaseConfigured) {
@@ -48,38 +67,8 @@ export default function TodosScreen() {
       );
       return;
     }
-
-    const db = getRealtimeDb();
-    const todosRef = ref(db, TODOS_PATH);
-
-    const unsub = onValue(
-      todosRef,
-      (snapshot) => {
-        const val = snapshot.val() as Record<string, TodoRaw> | null;
-        const next = parseTodosSnapshot(val);
-
-        if (__DEV__) {
-          console.log(
-            `[RTDB] "${TODOS_PATH}" → ${next.length} tarea(s), exists=${snapshot.exists()}`,
-          );
-          next.forEach((t) => console.log(`  id=${t.id}`, { title: t.title, completed: t.completed, createdAt: t.createdAt }));
-        }
-
-        setTodos(next);
-        setError(null);
-        setLoading(false);
-      },
-      (e) => {
-        if (__DEV__) {
-          console.error('[RTDB] error en la escucha:', e);
-        }
-        setError(e.message);
-        setLoading(false);
-      },
-    );
-
-    return () => unsub();
-  }, []);
+    void loadTodos(false);
+  }, [loadTodos]);
 
   const openAddModal = useCallback(() => {
     setNewTitle('');
@@ -95,41 +84,42 @@ export default function TodosScreen() {
     const title = newTitle.trim();
     if (!title || !isFirebaseConfigured) return;
     try {
-      const db = getRealtimeDb();
-      const todosRef = ref(db, TODOS_PATH);
-      const newRef = push(todosRef);
-      await set(newRef, {
-        title,
-        completed: false,
-        createdAt: Date.now(),
-      });
+      setError(null);
+      await restCreateTodo(title);
       closeModal();
+      await loadTodos(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo guardar');
     }
-  }, [newTitle, closeModal]);
+  }, [newTitle, closeModal, loadTodos]);
 
-  const toggleComplete = useCallback(async (item: TodoItem) => {
-    if (!isFirebaseConfigured) return;
-    try {
-      const db = getRealtimeDb();
-      await update(ref(db, `${TODOS_PATH}/${item.id}`), {
-        completed: !item.completed,
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'No se pudo actualizar');
-    }
-  }, []);
+  const toggleComplete = useCallback(
+    async (item: TodoItem) => {
+      if (!isFirebaseConfigured) return;
+      try {
+        setError(null);
+        await restUpdateTodoCompleted(item.id, !item.completed);
+        await loadTodos(false);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'No se pudo actualizar');
+      }
+    },
+    [loadTodos],
+  );
 
-  const removeTask = useCallback(async (id: string) => {
-    if (!isFirebaseConfigured) return;
-    try {
-      const db = getRealtimeDb();
-      await remove(ref(db, `${TODOS_PATH}/${id}`));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'No se pudo eliminar');
-    }
-  }, []);
+  const removeTask = useCallback(
+    async (id: string) => {
+      if (!isFirebaseConfigured) return;
+      try {
+        setError(null);
+        await restDeleteTodo(id);
+        await loadTodos(false);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'No se pudo eliminar');
+      }
+    },
+    [loadTodos],
+  );
 
   return (
     <SafeAreaView style={[styles.safe, { backgroundColor: theme.background }]} edges={['top']}>
@@ -139,10 +129,12 @@ export default function TodosScreen() {
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
         <View style={styles.header}>
           <Text style={[styles.headerTitle, { color: theme.text }]}>Tareas</Text>
-          <Text style={[styles.headerSubtitle, { color: theme.icon }]}>SDK (tiempo real)</Text>
+          <Text style={[styles.headerSubtitle, { color: theme.icon }]}>
+            REST API (GET/POST/PATCH/DELETE)
+          </Text>
         </View>
 
-        {loading ? (
+        {loading && !refreshing ? (
           <View style={styles.centered}>
             <ActivityIndicator size="large" color={theme.tint} />
           </View>
@@ -155,9 +147,16 @@ export default function TodosScreen() {
             data={todos}
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={() => void loadTodos(true)}
+                tintColor={theme.tint}
+              />
+            }
             ListEmptyComponent={
               <Text style={[styles.empty, { color: theme.icon }]}>
-                No hay tareas. Pulsa + para añadir una.
+                No hay tareas. Pulsa + para añadir una. Arrastra hacia abajo para actualizar.
               </Text>
             }
             renderItem={({ item }) => (
