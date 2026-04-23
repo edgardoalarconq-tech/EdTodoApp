@@ -17,10 +17,10 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { Colors } from '@/constants/theme';
 import {
-  restCreateTodo,
   restDeleteTodo,
-  restFetchTodos,
-  restUpdateTodoCompleted,
+  restGetTodos,
+  restPatchTodoCompleted,
+  restPostTodo,
 } from '@/lib/firebase-rtdb-rest';
 import { isFirebaseConfigured } from '@/lib/firebase';
 import type { TodoItem } from '@/lib/todos-model';
@@ -46,7 +46,7 @@ export default function TodosRestScreen() {
         setLoading(true);
       }
       setError(null);
-      const list = await restFetchTodos();
+      const list = await restGetTodos();
       setTodos(list);
       if (__DEV__) {
         console.log(`[RTDB REST] GET /todos.json → ${list.length} tarea(s)`);
@@ -85,7 +85,7 @@ export default function TodosRestScreen() {
     if (!title || !isFirebaseConfigured) return;
     try {
       setError(null);
-      await restCreateTodo(title);
+      await restPostTodo(title);
       closeModal();
       await loadTodos(false);
     } catch (e) {
@@ -98,7 +98,7 @@ export default function TodosRestScreen() {
       if (!isFirebaseConfigured) return;
       try {
         setError(null);
-        await restUpdateTodoCompleted(item.id, !item.completed);
+        await restPatchTodoCompleted(item.id, !item.completed);
         await loadTodos(false);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'No se pudo actualizar');
