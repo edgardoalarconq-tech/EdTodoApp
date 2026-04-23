@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SignOutButton } from '@/components/sign-out-button';
 import { Colors } from '@/constants/theme';
 import {
   restDeleteTodo,
@@ -23,6 +24,7 @@ import {
   restPostTodo,
 } from '@/lib/firebase-rtdb-rest';
 import { isFirebaseConfigured } from '@/lib/firebase';
+import { getTodosFromCache, setTodosCache } from '@/lib/todos-cache';
 import type { TodoItem } from '@/lib/todos-model';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
@@ -37,27 +39,32 @@ export default function TodosRestScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [newTitle, setNewTitle] = useState('');
 
-  const loadTodos = useCallback(async (isRefresh = false) => {
-    if (!isFirebaseConfigured) return;
-    try {
-      if (isRefresh) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
+  const loadTodos = useCallback(
+    async (opts: { isRefresh?: boolean; revalidateOnly?: boolean } = {}) => {
+      const { isRefresh = false, revalidateOnly = false } = opts;
+      if (!isFirebaseConfigured) return;
+      try {
+        if (isRefresh) {
+          setRefreshing(true);
+        } else if (!revalidateOnly) {
+          setLoading(true);
+        }
+        setError(null);
+        const list = await restGetTodos();
+        setTodos(list);
+        await setTodosCache(list);
+        if (__DEV__) {
+          console.log(`[RTDB REST] GET /todos.json → ${list.length} tarea(s)`);
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Error al cargar');
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
       }
-      setError(null);
-      const list = await restGetTodos();
-      setTodos(list);
-      if (__DEV__) {
-        console.log(`[RTDB REST] GET /todos.json → ${list.length} tarea(s)`);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Error al cargar');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!isFirebaseConfigured) {
@@ -67,7 +74,20 @@ export default function TodosRestScreen() {
       );
       return;
     }
-    void loadTodos(false);
+    let mounted = true;
+    void (async () => {
+      const cached = await getTodosFromCache();
+      if (!mounted) return;
+      const revalidate = cached !== null;
+      if (revalidate) {
+        setTodos(cached);
+        setLoading(false);
+      }
+      await loadTodos({ revalidateOnly: revalidate });
+    })();
+    return () => {
+      mounted = false;
+    };
   }, [loadTodos]);
 
   const openAddModal = useCallback(() => {
@@ -87,7 +107,7 @@ export default function TodosRestScreen() {
       setError(null);
       await restPostTodo(title);
       closeModal();
-      await loadTodos(false);
+      await loadTodos({ revalidateOnly: true });
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo guardar');
     }
@@ -99,7 +119,7 @@ export default function TodosRestScreen() {
       try {
         setError(null);
         await restPatchTodoCompleted(item.id, !item.completed);
-        await loadTodos(false);
+        await loadTodos({ revalidateOnly: true });
       } catch (e) {
         setError(e instanceof Error ? e.message : 'No se pudo actualizar');
       }
@@ -113,7 +133,7 @@ export default function TodosRestScreen() {
       try {
         setError(null);
         await restDeleteTodo(id);
-        await loadTodos(false);
+        await loadTodos({ revalidateOnly: true });
       } catch (e) {
         setError(e instanceof Error ? e.message : 'No se pudo eliminar');
       }
@@ -128,10 +148,13 @@ export default function TodosRestScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
         <View style={styles.header}>
-          <Text style={[styles.headerTitle, { color: theme.text }]}>Tareas</Text>
-          <Text style={[styles.headerSubtitle, { color: theme.icon }]}>
-            REST API (GET/POST/PATCH/DELETE)
-          </Text>
+          <View style={styles.headerTextBlock}>
+            <Text style={[styles.headerTitle, { color: theme.text }]}>Tareas</Text>
+            <Text style={[styles.headerSubtitle, { color: theme.icon }]}>
+              REST API (GET/POST/PATCH/DELETE)
+            </Text>
+          </View>
+          <SignOutButton />
         </View>
 
         {loading && !refreshing ? (
@@ -150,7 +173,7 @@ export default function TodosRestScreen() {
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
-                onRefresh={() => void loadTodos(true)}
+                onRefresh={() => void loadTodos({ isRefresh: true })}
                 tintColor={theme.tint}
               />
             }
@@ -271,6 +294,12 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 20,
     paddingBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  headerTextBlock: {
+    flex: 1,
   },
   headerTitle: {
     fontSize: 28,

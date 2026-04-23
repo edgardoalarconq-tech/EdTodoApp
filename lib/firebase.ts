@@ -1,5 +1,6 @@
 import { getApp, getApps, initializeApp, type FirebaseApp } from 'firebase/app';
 import Constants from 'expo-constants';
+import { getAuth, type Auth } from 'firebase/auth';
 import { getDatabase } from 'firebase/database';
 
 type FirebaseFields = {
@@ -46,6 +47,21 @@ function getFirebaseApp(): FirebaseApp {
     return initializeApp(firebaseConfig);
   }
   return getApp();
+}
+
+let authInstance: Auth | null = null;
+
+export function getFirebaseAuth(): Auth {
+  if (!isFirebaseConfigured) {
+    throw new Error(
+      'Falta configuración Firebase (apiKey, projectId y databaseURL). Revisa .env y reinicia con npx expo start -c',
+    );
+  }
+  if (authInstance) {
+    return authInstance;
+  }
+  authInstance = getAuth(getFirebaseApp());
+  return authInstance;
 }
 
 export function getRealtimeDb() {

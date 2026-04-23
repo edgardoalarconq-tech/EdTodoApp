@@ -22,8 +22,10 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { SignOutButton } from '@/components/sign-out-button';
 import { Colors } from '@/constants/theme';
 import { getRealtimeDb, isFirebaseConfigured } from '@/lib/firebase';
+import { getTodosFromCache, setTodosCache } from '@/lib/todos-cache';
 import type { TodoItem, TodoRaw } from '@/lib/todos-model';
 import { parseTodosSnapshot } from '@/lib/todos-model';
 import { useColorScheme } from '@/hooks/use-color-scheme';
@@ -49,36 +51,52 @@ export default function TodosScreen() {
       return;
     }
 
-    const db = getRealtimeDb();
-    const todosRef = ref(db, TODOS_PATH);
+    let cancelled = false;
+    let unsub: (() => void) | undefined;
 
-    const unsub = onValue(
-      todosRef,
-      (snapshot) => {
-        const val = snapshot.val() as Record<string, TodoRaw> | null;
-        const next = parseTodosSnapshot(val);
-
-        if (__DEV__) {
-          console.log(
-            `[RTDB] "${TODOS_PATH}" → ${next.length} tarea(s), exists=${snapshot.exists()}`,
-          );
-          next.forEach((t) => console.log(`  id=${t.id}`, { title: t.title, completed: t.completed, createdAt: t.createdAt }));
-        }
-
-        setTodos(next);
-        setError(null);
+    void (async () => {
+      const cached = await getTodosFromCache();
+      if (cancelled) return;
+      if (cached !== null) {
+        setTodos(cached);
         setLoading(false);
-      },
-      (e) => {
-        if (__DEV__) {
-          console.error('[RTDB] error en la escucha:', e);
-        }
-        setError(e.message);
-        setLoading(false);
-      },
-    );
+      }
 
-    return () => unsub();
+      if (cancelled) return;
+      const db = getRealtimeDb();
+      const todosRef = ref(db, TODOS_PATH);
+      unsub = onValue(
+        todosRef,
+        (snapshot) => {
+          const val = snapshot.val() as Record<string, TodoRaw> | null;
+          const next = parseTodosSnapshot(val);
+
+          if (__DEV__) {
+            console.log(
+              `[RTDB] "${TODOS_PATH}" → ${next.length} tarea(s), exists=${snapshot.exists()}`,
+            );
+            next.forEach((t) => console.log(`  id=${t.id}`, { title: t.title, completed: t.completed, createdAt: t.createdAt }));
+          }
+
+          setTodos(next);
+          void setTodosCache(next);
+          setError(null);
+          setLoading(false);
+        },
+        (e) => {
+          if (__DEV__) {
+            console.error('[RTDB] error en la escucha:', e);
+          }
+          setError(e.message);
+          setLoading(false);
+        },
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+      unsub?.();
+    };
   }, []);
 
   const openAddModal = useCallback(() => {
@@ -138,8 +156,11 @@ export default function TodosScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}>
         <View style={styles.header}>
-          <Text style={[styles.headerTitle, { color: theme.text }]}>Tareas</Text>
-          <Text style={[styles.headerSubtitle, { color: theme.icon }]}>SDK (tiempo real)</Text>
+          <View style={styles.headerTextBlock}>
+            <Text style={[styles.headerTitle, { color: theme.text }]}>Tareas</Text>
+            <Text style={[styles.headerSubtitle, { color: theme.icon }]}>SDK (tiempo real)</Text>
+          </View>
+          <SignOutButton />
         </View>
 
         {loading ? (
@@ -272,6 +293,12 @@ const styles = StyleSheet.create({
   header: {
     paddingHorizontal: 20,
     paddingBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  headerTextBlock: {
+    flex: 1,
   },
   headerTitle: {
     fontSize: 28,
